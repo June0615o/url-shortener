@@ -108,7 +108,7 @@ func (h *RedirectHandler) ServeRedirect(w http.ResponseWriter, r *http.Request) 
 	// Apply smart routing rules
 	targetURL := link.OriginalURL
 	if link.Rules != "" && link.Rules != "[]" {
-		if resolved := applyRules(link.Rules, r); resolved != "" {
+		if resolved := util.ApplyRules(link.Rules, r); resolved != "" {
 			targetURL = resolved
 		}
 	}
