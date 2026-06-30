@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/panhao/url-shortener/internal/cache"
 	"github.com/panhao/url-shortener/internal/model"
 	"github.com/panhao/url-shortener/internal/service"
 	"github.com/panhao/url-shortener/internal/util"
@@ -14,12 +15,17 @@ import (
 type RedirectHandler struct {
 	linkService *service.LinkService
 	clickChan   chan<- model.ClickLog
+	redisCache  *cache.RedisCache
+	bloomFilter *cache.BloomFilter
 }
 
-func NewRedirectHandler(linkService *service.LinkService, clickChan chan<- model.ClickLog) *RedirectHandler {
+func NewRedirectHandler(linkService *service.LinkService, clickChan chan<- model.ClickLog,
+	redisCache *cache.RedisCache, bloomFilter *cache.BloomFilter) *RedirectHandler {
 	return &RedirectHandler{
 		linkService: linkService,
 		clickChan:   clickChan,
+		redisCache:  redisCache,
+		bloomFilter: bloomFilter,
 	}
 }
 
@@ -31,6 +37,26 @@ func (h *RedirectHandler) ServeRedirect(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Layer 0: Bloom filter — fast rejection of non-existent codes
+	if h.bloomFilter != nil {
+		mightExist, err := h.bloomFilter.MightExist(r.Context(), code)
+		if err == nil && !mightExist {
+			http.NotFound(w, r)
+			return
+		}
+	}
+
+	// Layer 1: Redis cache — fast lookup
+	if h.redisCache != nil {
+		cachedURL, err := h.redisCache.GetURL(r.Context(), code)
+		if err == nil && cachedURL != "" {
+			h.logClick(-1, r) // We don't have linkID from cache
+			http.Redirect(w, r, cachedURL, http.StatusFound)
+			return
+		}
+	}
+
+	// Layer 2: PostgreSQL — authoritative source
 	link, err := h.linkService.Get(r.Context(), code)
 	if err != nil {
 		log.Printf("Error fetching link %s: %v", code, err)
@@ -41,6 +67,13 @@ func (h *RedirectHandler) ServeRedirect(w http.ResponseWriter, r *http.Request) 
 	if link == nil {
 		http.NotFound(w, r)
 		return
+	}
+
+	// Backfill cache
+	if h.redisCache != nil {
+		if err := h.redisCache.SetURL(r.Context(), code, link.OriginalURL, link.ExpireAt); err != nil {
+			log.Printf("Warning: failed to cache URL for %s: %v", code, err)
+		}
 	}
 
 	// Check expiration

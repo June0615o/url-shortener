@@ -4,26 +4,30 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/panhao/url-shortener/internal/cache"
 	"github.com/panhao/url-shortener/internal/model"
 	"github.com/panhao/url-shortener/internal/repository"
 	"github.com/panhao/url-shortener/internal/util"
 )
 
 type LinkService struct {
-	linkRepo  *repository.LinkRepo
-	codeSvc   *ShortCodeService
-	baseURL   string
+	linkRepo   *repository.LinkRepo
+	codeSvc    *ShortCodeService
+	baseURL    string
+	redisCache *cache.RedisCache
 }
 
-func NewLinkService(linkRepo *repository.LinkRepo, codeSvc *ShortCodeService, baseURL string) *LinkService {
+func NewLinkService(linkRepo *repository.LinkRepo, codeSvc *ShortCodeService, baseURL string, redisCache *cache.RedisCache) *LinkService {
 	return &LinkService{
-		linkRepo: linkRepo,
-		codeSvc:  codeSvc,
-		baseURL:  baseURL,
+		linkRepo:   linkRepo,
+		codeSvc:    codeSvc,
+		baseURL:    baseURL,
+		redisCache: redisCache,
 	}
 }
 
@@ -117,6 +121,13 @@ func (s *LinkService) Create(ctx context.Context, req model.CreateLinkReq, userI
 
 	if err := s.linkRepo.Create(ctx, link); err != nil {
 		return nil, fmt.Errorf("create link: %w", err)
+	}
+
+	// Write to cache
+	if s.redisCache != nil {
+		if err := s.redisCache.SetURL(ctx, shortCode, targetURL, link.ExpireAt); err != nil {
+			log.Printf("Warning: failed to cache new link %s: %v", shortCode, err)
+		}
 	}
 
 	return &model.LinkResp{

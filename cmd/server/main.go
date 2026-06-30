@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/panhao/url-shortener/internal/cache"
 	"github.com/panhao/url-shortener/internal/config"
 	"github.com/panhao/url-shortener/internal/handler"
 	mw "github.com/panhao/url-shortener/internal/middleware"
@@ -20,7 +22,10 @@ import (
 	"github.com/panhao/url-shortener/internal/service"
 )
 
-const clickBufferSize = 10000
+const (
+	clickBufferSize = 10000
+	urlCacheTTL     = 24 * time.Hour
+)
 
 func main() {
 	cfg := config.Load()
@@ -44,9 +49,34 @@ func main() {
 	clickLogRepo := repository.NewClickLogRepo(pool)
 	userRepo := repository.NewUserRepo(pool)
 
+	// Redis cache
+	redisAddr := fmt.Sprintf("%s:%s", cfg.RedisHost, cfg.RedisPort)
+	redisCache, err := cache.NewRedisCache(redisAddr, cfg.RedisPassword, cfg.RedisDB, urlCacheTTL)
+	if err != nil {
+		log.Printf("Warning: Redis unavailable (%v), running without cache", err)
+	}
+
+	// Bloom filter (backed by Redis)
+	var bloomFilter *cache.BloomFilter
+	if redisCache != nil {
+		bloomFilter = cache.NewBloomFilter(redisCache.Client(), "bloom:shortcodes", 1000000, 0.001)
+
+		// Load existing short codes into bloom filter
+		codes, err := linkRepo.GetAllShortCodes(context.Background())
+		if err != nil {
+			log.Printf("Warning: failed to load codes for bloom filter: %v", err)
+		} else {
+			if err := bloomFilter.LoadAll(context.Background(), codes); err != nil {
+				log.Printf("Warning: failed to populate bloom filter: %v", err)
+			} else {
+				log.Printf("Bloom filter loaded with %d short codes", len(codes))
+			}
+		}
+	}
+
 	// Services
 	codeSvc := service.NewShortCodeService(linkRepo)
-	linkSvc := service.NewLinkService(linkRepo, codeSvc, cfg.BaseURL)
+	linkSvc := service.NewLinkService(linkRepo, codeSvc, cfg.BaseURL, redisCache)
 	authSvc := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours)
 
 	// Click log pipeline
@@ -54,7 +84,7 @@ func main() {
 	go clickLogWorker(clickChan, clickLogRepo)
 
 	// Handlers
-	redirectH := handler.NewRedirectHandler(linkSvc, clickChan)
+	redirectH := handler.NewRedirectHandler(linkSvc, clickChan, redisCache, bloomFilter)
 	linkH := handler.NewLinkHandler(linkSvc)
 	authH := handler.NewAuthHandler(authSvc)
 	dashboardH := handler.NewDashboardHandler(linkSvc)
@@ -74,7 +104,13 @@ func main() {
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
-	r.Use(mw.RateLimitGlobal(cfg.RateLimitGlobal))
+
+	// Rate limiter: use Redis if available, fallback to in-memory
+	if redisCache != nil {
+		r.Use(mw.RateLimitRedis(redisCache, cfg.RateLimitGlobal))
+	} else {
+		r.Use(mw.RateLimitGlobal(cfg.RateLimitGlobal))
+	}
 
 	// API v1
 	r.Route("/api/v1", func(r chi.Router) {
@@ -132,6 +168,9 @@ func main() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownCancel()
 
+		if redisCache != nil {
+			redisCache.Close()
+		}
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Printf("HTTP server shutdown error: %v", err)
 		}
@@ -154,7 +193,6 @@ func clickLogWorker(ch <-chan model.ClickLog, repo *repository.ClickLogRepo) {
 		select {
 		case click, ok := <-ch:
 			if !ok {
-				// Channel closed, flush remaining
 				if len(batch) > 0 {
 					flushBatch(repo, batch)
 				}
