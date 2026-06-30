@@ -1,0 +1,77 @@
+services:
+  server:
+    build: .
+    container_name: url-shortener
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - SERVER_PORT=8080
+      - SERVER_HOST=0.0.0.0
+      - BASE_URL=http://localhost:8080
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=shortener
+      - DB_PASSWORD=shortener_dev
+      - DB_NAME=url_shortener
+      - DB_SSLMODE=disable
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=
+      - REDIS_DB=0
+      - JWT_SECRET=dev-jwt-secret-change-in-production
+      - JWT_EXPIRE_HOURS=72
+      - RATE_LIMIT_GLOBAL=100
+      - RATE_LIMIT_CREATE=10
+      - GEOIP_DB_PATH=./data/GeoLite2-City.mmdb
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - shortener
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: url-shortener-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=shortener
+      - POSTGRES_PASSWORD=shortener_dev
+      - POSTGRES_DB=url_shortener
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shortener -d url_shortener"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shortener
+
+  redis:
+    image: redis:7-alpine
+    container_name: url-shortener-cache
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shortener
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  shortener:
+    driver: bridge

@@ -1,0 +1,33 @@
+# Environment
+.env
+.env.local
+.env.production
+
+# Binary
+/server
+/url-shortener
+*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+data/GeoLite2-City.mmdb
+
+# Vendored dependencies (we use go modules)
+vendor/
+
+# Test coverage
+*.out
+coverage.html
+
+# Node (frontend)
+web/node_modules/
+web/dist/

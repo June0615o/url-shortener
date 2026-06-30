@@ -1,0 +1,5 @@
+DROP TABLE IF EXISTS api_keys;
+DROP TABLE IF EXISTS click_stats_hourly;
+DROP TABLE IF EXISTS click_logs;
+DROP TABLE IF EXISTS links;
+DROP TABLE IF EXISTS users;
