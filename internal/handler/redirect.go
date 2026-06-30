@@ -125,12 +125,26 @@ func (h *RedirectHandler) ServeRedirect(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *RedirectHandler) logClick(linkID int64, r *http.Request) {
+	ip := getClientIP(r)
+	ua := r.UserAgent()
+
+	// Parse User-Agent
+	uaInfo := util.ParseUserAgent(ua)
+
+	// GeoIP lookup
+	geo := util.LookupIP(ip)
+
 	click := model.ClickLog{
-		LinkID:    linkID,
-		IP:        getClientIP(r),
-		UserAgent: r.UserAgent(),
-		Referer:   r.Referer(),
-		ClickedAt: time.Now(),
+		LinkID:     linkID,
+		IP:         ip,
+		UserAgent:  ua,
+		Referer:    r.Referer(),
+		Country:    geo.Country,
+		City:       geo.City,
+		DeviceType: uaInfo.DeviceType,
+		Browser:    uaInfo.Browser,
+		OS:         uaInfo.OS,
+		ClickedAt:  time.Now(),
 	}
 
 	select {
