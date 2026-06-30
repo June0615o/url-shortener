@@ -79,7 +79,6 @@ func main() {
 	// API v1
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public endpoints
-		r.Post("/links", linkH.Create)
 		r.Post("/auth/register", authH.Register)
 		r.Post("/auth/login", authH.Login)
 
